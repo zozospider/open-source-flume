@@ -158,6 +158,8 @@ public class MemoryChannel extends BasicChannelSemantics implements TransactionC
 
     // commit() 可能是 put 流程的 commit() 或 take 流程的 commit(), 具体取决于调用该 Channel 对象的是 Source 还是 Sink
     // 此处不管是 Source 还是 Sink 调用, 都做统一处理
+    // put 流程的 commit() 逻辑: 将 putList (put 事务的缓存队列) 中的每一个 event 添加到 queue (保存 MemoryChannel 数据的队列) 中, 清空 putList (put 事务的缓存队列)
+    // take 流程的 commit() 逻辑: 清空 takeList (take 事务的缓存队列)
     @Override
     protected void doCommit() throws InterruptedException {
       // 临时存储中的 takeList 缓存和 putList 缓存差额
@@ -231,6 +233,10 @@ public class MemoryChannel extends BasicChannelSemantics implements TransactionC
       channelCounter.setChannelSize(queue.size());
     }
 
+    // rollback() 可能是 put 流程的 rollback() 或 take 流程的 rollback(), 具体取决于调用该 Channel 对象的是 Source 还是 Sink
+    // 此处不管是 Source 还是 Sink 调用, 都做统一处理
+    // put 流程的 rollback() 逻辑: 清空 putList (put 事务的缓存队列)
+    // take 流程的 rollback() 逻辑: 将 takeList (take 事务的缓存队列) 中的每一个 event 重新添加到 queue (保存 MemoryChannel 数据的队列) 中
     @Override
     protected void doRollback() {
       int takes = takeList.size();
@@ -239,7 +245,7 @@ public class MemoryChannel extends BasicChannelSemantics implements TransactionC
         Preconditions.checkState(queue.remainingCapacity() >= takeList.size(),
             "Not enough space in memory channel " +
             "queue to rollback takes. This should never happen, please report");
-        // 循环将 takeList 中的每个元素取出, 放入到 queue 的尾部 (即回退调用 take 方法时从 queue 中取出的 events), 当 queue 满时候, 会抛出 IllegalStateException("Queue full") 异常
+        // 循环将 takeList 中的每个元素取出, 放入到 queue 的头部 (即回退调用 take 方法时从 queue 中取出的 events), 当 queue 满时候, 会抛出 IllegalStateException("Queue full") 异常
         while (!takeList.isEmpty()) {
           queue.addFirst(takeList.removeLast());
         }
@@ -263,6 +269,7 @@ public class MemoryChannel extends BasicChannelSemantics implements TransactionC
   // 锁定以保护 queue, 主要是需要在调整大小期间将其锁定, 它永远不应该通过阻塞操作来保持.
   private Object queueLock = new Object();
 
+  // queue (保存 MemoryChannel 数据的队列)
   // MemoryChannel 通过此 queue (FIFO) 保存 events 在内存中.
   // ps: 详情见 LinkedBlockingDeque 类的使用.
   @GuardedBy(value = "queueLock")

@@ -524,8 +524,12 @@ public class KafkaChannel extends BasicChannelSemantics {
                 return null;
             }
             if (!consumerAndRecords.get().failedEvents.isEmpty()) {
+                // 如果 ConsumerAndRecords 的 failedEvents (存储了 rollback() 未处理的 events) 不为空, 则本次 take() 返回 failedEvents 中的一个 event
+
                 e = consumerAndRecords.get().failedEvents.removeFirst();
             } else {
+                // 如果 ConsumerAndRecords 的 failedEvents 为空, 则正常处理
+
                 if ( logger.isTraceEnabled() ) {
                     logger.trace("Assignment during take: {}",
                             consumerAndRecords.get().consumer.assignment().toString());
@@ -550,7 +554,7 @@ public class KafkaChannel extends BasicChannelSemantics {
                         // 将 Kafka 的 ConsumerRecord 的 value (byte[] 字节数组) 反序列化成 Flume 的 event 的 body, 构建出 event
                         e = deserializeValue(record.value(), parseAsFlumeEvent);
 
-                        // 保存 topic 对应的 offset
+                        // 缓存 topic-partition 对应的 offset
                         TopicPartition tp = new TopicPartition(record.topic(), record.partition());
                         OffsetAndMetadata oam = new OffsetAndMetadata(record.offset() + 1, batchUUID);
                         consumerAndRecords.get().saveOffsets(tp,oam);
@@ -588,8 +592,8 @@ public class KafkaChannel extends BasicChannelSemantics {
         }
 
         // commit() 可能是 put 流程的 commit() 或 take 流程的 commit(), 具体取决于调用该 Channel 对象的是 Source 还是 Sink
-        // put 流程的 commit() 逻辑:
-        // take 流程的 commit() 逻辑:
+        // put 流程的 commit() 逻辑: 将 producerRecords (put 事务的缓存队列) 中的每一个 ProducerRecord 通过 KafkaProducer.send() 发送到 Kafka 中, 清空 producerRecords (put 事务的缓存队列)
+        // take 流程的 commit() 逻辑: KafkaConsumer 提交 offsets, 清空 events (take 事务的缓存队列)
         @Override
         protected void doCommit() throws InterruptedException {
             logger.trace("Starting commit");
@@ -597,7 +601,8 @@ public class KafkaChannel extends BasicChannelSemantics {
                 return;
             }
             if (type.equals(TransactionType.PUT)) {
-                // put 流程
+                // put 流程:
+                // 将 producerRecords (put 事务的缓存队列) 中的每一个 ProducerRecord 通过 KafkaProducer.send() 发送到 Kafka 中, 清空 producerRecords (put 事务的缓存队列)
 
                 if (!kafkaFutures.isPresent()) {
                     kafkaFutures = Optional.of(new LinkedList<Future<RecordMetadata>>());
@@ -606,6 +611,10 @@ public class KafkaChannel extends BasicChannelSemantics {
                     long batchSize = producerRecords.get().size();
                     long startTime = System.nanoTime();
                     int index = 0;
+
+                    // 循环 producerRecords (put 事务的缓存队列), 对于每一个 ProducerRecord 执行以下逻辑:
+                    //   通过 KafkaProducer.send() 发送 Record 到 Kafka 服务端, 其中 ChannelCallback 为回调方法
+                    //   KafkaProducer.send() 会返回一个 Future<RecordMetadata> 对象, 可在后续进行异步处理
                     for (ProducerRecord<String, byte[]> record : producerRecords.get()) {
                         index++;
                         kafkaFutures.get().add(producer.send(record, new ChannelCallback(index, startTime)));
@@ -613,6 +622,7 @@ public class KafkaChannel extends BasicChannelSemantics {
                     //prevents linger.ms from being a problem
                     producer.flush();
 
+                    // 批量处理多个 KafkaProducer.send() 返回的 Future<RecordMetadata>
                     for (Future<RecordMetadata> future : kafkaFutures.get()) {
                         future.get();
                     }
@@ -627,13 +637,16 @@ public class KafkaChannel extends BasicChannelSemantics {
                             ex);
                 }
             } else {
-                // take 流程
+                // take 流程:
+                // KafkaConsumer 提交 offsets, 清空 events (take 事务的缓存队列)
 
                 // event taken ensures that we have collected events in this transaction
                 // before committing
                 if (consumerAndRecords.get().failedEvents.isEmpty() && eventTaken) {
                     logger.trace("About to commit batch");
                     long startTime = System.nanoTime();
+
+                    // KafkaConsumer 提交 offsets, 记录消费位置
                     consumerAndRecords.get().commitOffsets();
                     long endTime = System.nanoTime();
                     counter.addToKafkaCommitTimer((endTime - startTime) / (1000 * 1000));
@@ -642,6 +655,7 @@ public class KafkaChannel extends BasicChannelSemantics {
                     }
                 }
 
+                // 清空 events (take 事务的缓存队列), 便于事务下次使用
                 int takes = events.get().size();
                 if (takes > 0) {
                     counter.addToEventTakeSuccessCount(takes);
@@ -650,15 +664,24 @@ public class KafkaChannel extends BasicChannelSemantics {
             }
         }
 
+        // rollback() 可能是 put 流程的 rollback() 或 take 流程的 rollback(), 具体取决于调用该 Channel 对象的是 Source 还是 Sink
+        // put 流程的 rollback() 逻辑: 清空 producerRecords (put 事务的缓存队列)
+        // take 流程的 rollback() 逻辑: 将 events (take 事务的缓存队列) 添加到 ConsumerAndRecords 的 failedEvents 中, 清空 events (take 事务的缓存队列)
         @Override
         protected void doRollback() throws InterruptedException {
             if (type.equals(TransactionType.NONE)) {
                 return;
             }
             if (type.equals(TransactionType.PUT)) {
+                // put 流程:
+                // 清空 producerRecords (put 事务的缓存队列)
+
                 producerRecords.get().clear();
                 kafkaFutures.get().clear();
             } else {
+                // take 流程:
+                // 将 events (take 事务的缓存队列) 添加到 ConsumerAndRecords 的 failedEvents 中, 清空 events (take 事务的缓存队列)
+
                 counter.addToRollbackCounter(events.get().size());
                 consumerAndRecords.get().failedEvents.addAll(events.get());
                 events.get().clear();
@@ -743,6 +766,9 @@ public class KafkaChannel extends BasicChannelSemantics {
         final KafkaConsumer<String, byte[]> consumer;
 
         final String uuid;
+
+        // take 流程调用 rollback() 时, 用于保存 events (take 事务的缓存队列) 中的数据
+        // 这些数据将在 take() 调用时优先被处理
         final LinkedList<Event> failedEvents = new LinkedList<Event>();
 
         // consumer.poll() 拉取的一批 ConsumerRecords 消息
@@ -750,7 +776,7 @@ public class KafkaChannel extends BasicChannelSemantics {
         // consumer.poll() 拉取的一批 ConsumerRecords 消息转换成的迭代器
         Iterator<ConsumerRecord<String, byte[]>> recordIterator;
 
-        // 保存 topic 对应的 offset
+        // 缓存 topic-partition 对应的 offset
         Map<TopicPartition, OffsetAndMetadata> offsets;
 
         ConsumerAndRecords(KafkaConsumer<String, byte[]> consumer, String uuid) {
@@ -773,8 +799,10 @@ public class KafkaChannel extends BasicChannelSemantics {
             }
         }
 
+        // KafkaConsumer 提交 offsets, 记录消费位置
         private void commitOffsets() {
             try {
+                // KafkaConsumer 提交 offsets (doTake() 方法缓存了 topic-partition 对应的 offset)
                 consumer.commitSync(offsets);
             } catch (Exception e) {
                 logger.info("Error committing offsets.", e);
@@ -810,6 +838,7 @@ public class KafkaChannel extends BasicChannelSemantics {
             return sb.toString();
         }
 
+        // 由 doTake() 方法调用: 缓存 topic-partition 对应的 offset
         private void saveOffsets(TopicPartition tp, OffsetAndMetadata oam) {
             offsets.put(tp,oam);
             if (logger.isTraceEnabled()) {

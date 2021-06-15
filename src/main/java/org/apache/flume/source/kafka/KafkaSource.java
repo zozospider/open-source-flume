@@ -369,7 +369,7 @@ public class KafkaSource extends AbstractPollableSource
                     log.debug("Wrote {} events to channel", eventList.size());
                 }
 
-                // 清空 eventList 方便当前 doProcess() 方法下次使用
+                // 清空 eventList 便于当前 doProcess() 方法下次使用
                 eventList.clear();
 
                 // KafkaConsumer 手动控制 offset 的 commit 逻辑

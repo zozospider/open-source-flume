@@ -271,8 +271,7 @@ public class KafkaSink extends AbstractSink implements Configurable, BatchSizeSu
                                 serializeEvent(event, useAvroEventFormat));
                     }
 
-                    // 通过 KafkaProducer.send() 发送当前 Record 到 Kafka 服务端
-                    // SinkCallback 为回调方法
+                    // 通过 KafkaProducer.send() 发送当前 Record 到 Kafka 服务端, 其中 SinkCallback 为回调方法
                     // KafkaProducer.send() 会返回一个 Future<RecordMetadata> 对象, 可在后续进行异步处理
                     kafkaFutures.add(producer.send(record, new SinkCallback(startTime)));
 
