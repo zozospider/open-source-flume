@@ -125,8 +125,12 @@ public class KafkaChannel extends BasicChannelSemantics {
     /* Each Consumer commit will commit all partitions owned by it. To
      * ensure that each partition is only committed when all events are
      * actually done, we will need to keep a Consumer per thread.
+     *
+     * 每个 Consumer commit 将 commit 它拥有的所有 partitions.
+     * 为了确保每个 partition 仅在所有 events 实际完成时才 commit, 我们需要为每个线程保留一个 Consumer.
      */
-
+    // ConsumerAndRecords: 主要保存当前线程的 KafkaConsumer, 并将每次拉取的一批消息保存到 ConsumerRecords 和对应的迭代器中
+    // ThreadLocal: TODO
     private final ThreadLocal<ConsumerAndRecords> consumerAndRecords =
             new ThreadLocal<ConsumerAndRecords>() {
                 @Override
@@ -418,11 +422,18 @@ public class KafkaChannel extends BasicChannelSemantics {
         private TransactionType type = TransactionType.NONE;
         private Optional<ByteArrayOutputStream> tempOutStream = Optional
                 .absent();
+
+        // producerRecords (put 事务的缓存队列)
         // For put transactions, serialize the events and hold them until the commit goes is requested.
+        // 用于 put 事务, 序列化 events 并保留它们直到请求 commit.
         private Optional<LinkedList<ProducerRecord<String, byte[]>>> producerRecords =
                 Optional.absent();
+
+        // events (take 事务的缓存队列)
         // For take transactions, deserialize and hold them till commit goes through
+        // 用于 take 事务, 反序列化并保留它们直到 commit 通过
         private Optional<LinkedList<Event>> events = Optional.absent();
+
         private Optional<SpecificDatumWriter<AvroFlumeEvent>> writer =
                 Optional.absent();
         private Optional<SpecificDatumReader<AvroFlumeEvent>> reader =
@@ -442,16 +453,21 @@ public class KafkaChannel extends BasicChannelSemantics {
             rebalanceFlag.set(false);
         }
 
+        // 将一个 event 转换成 ProducerRecord 并添加到 producerRecords (put 事务的缓存队列) 中
         @Override
         protected void doPut(Event event) throws InterruptedException {
             type = TransactionType.PUT;
+
+            // 获取或创建 producerRecords (put 事务的缓存队列)
             if (!producerRecords.isPresent()) {
                 producerRecords = Optional.of(new LinkedList<ProducerRecord<String, byte[]>>());
             }
+            // 获取 Flume 的 event headers 中的 key 值
             String key = event.getHeaders().get(KEY_HEADER);
 
             Integer partitionId = null;
             try {
+                // 确认 partitionId
                 if (staticPartitionId != null) {
                     partitionId = staticPartitionId;
                 }
@@ -462,6 +478,8 @@ public class KafkaChannel extends BasicChannelSemantics {
                         partitionId = Integer.parseInt(headerVal);
                     }
                 }
+
+                // 将 put 到 channel 中的 event 转换成 ProducerRecord 并添加到 producerRecords (put 事务的缓存队列)
                 if (partitionId != null) {
                     producerRecords.get().add(
                             new ProducerRecord<String, byte[]>(topic.get(), partitionId, key,
@@ -479,6 +497,8 @@ public class KafkaChannel extends BasicChannelSemantics {
             }
         }
 
+        // 从 Channel 中取出一个 event, 并添加到 events (take 事务的缓存队列)
+        // 其中, Channel 中的数据保存在 Kafka 中, 需要通过 KafkaConsumer 取出并转换成 Flume 的 event
         @SuppressWarnings("unchecked")
         @Override
         protected Event doTake() throws InterruptedException {
@@ -493,6 +513,7 @@ public class KafkaChannel extends BasicChannelSemantics {
             } catch (Exception ex) {
                 logger.warn("Error while shutting down consumer", ex);
             }
+            // 获取或创建 events (take 事务的缓存队列)
             if (!events.isPresent()) {
                 events = Optional.of(new LinkedList<Event>());
             }
@@ -511,17 +532,32 @@ public class KafkaChannel extends BasicChannelSemantics {
                 }
                 try {
                     long startTime = System.nanoTime();
+
+                    // 如果 ConsumerAndRecords 中的 recordIterator 迭代器为空, 则继续从 Kafka 中拉取一批 ConsumerRecords 消息
                     if (!consumerAndRecords.get().recordIterator.hasNext()) {
+                        // 通过 KafkaConsumer.poll() 从 Kafka 中拉取一批 ConsumerRecords 消息, 保存到 recordIterator 迭代器
                         consumerAndRecords.get().poll();
                     }
+
+                    // 如果 ConsumerAndRecords 中的 recordIterator 迭代器不为空, 则从迭代器中取出一条 ConsumerRecord 消息进行处理
+                    // 否则说明 Channel 中没有数据, 返回 null
+
                     if (consumerAndRecords.get().recordIterator.hasNext()) {
+
+                        // 从迭代器中取出一条 ConsumerRecord 消息
                         ConsumerRecord<String, byte[]> record = consumerAndRecords.get().recordIterator.next();
+
+                        // 将 Kafka 的 ConsumerRecord 的 value (byte[] 字节数组) 反序列化成 Flume 的 event 的 body, 构建出 event
                         e = deserializeValue(record.value(), parseAsFlumeEvent);
+
+                        // 保存 topic 对应的 offset
                         TopicPartition tp = new TopicPartition(record.topic(), record.partition());
                         OffsetAndMetadata oam = new OffsetAndMetadata(record.offset() + 1, batchUUID);
                         consumerAndRecords.get().saveOffsets(tp,oam);
 
                         //Add the key to the header
+                        // 将 key 添加到 header 中
+                        // 将 Kafka 的 ConsumerRecord 的 key 值作为 Flume 的 event headers 中的 key 值
                         if (record.key() != null) {
                             e.getHeaders().put(KEY_HEADER, record.key());
                         }
@@ -545,10 +581,15 @@ public class KafkaChannel extends BasicChannelSemantics {
                 }
             }
             eventTaken = true;
+
+            // 将本次从 KafkaChannel 中取出并转换成的这个 Flume event 添加到 events (take 事务的缓存队列) 中, 并返回这个 event
             events.get().add(e);
             return e;
         }
 
+        // commit() 可能是 put 流程的 commit() 或 take 流程的 commit(), 具体取决于调用该 Channel 对象的是 Source 还是 Sink
+        // put 流程的 commit() 逻辑:
+        // take 流程的 commit() 逻辑:
         @Override
         protected void doCommit() throws InterruptedException {
             logger.trace("Starting commit");
@@ -556,6 +597,8 @@ public class KafkaChannel extends BasicChannelSemantics {
                 return;
             }
             if (type.equals(TransactionType.PUT)) {
+                // put 流程
+
                 if (!kafkaFutures.isPresent()) {
                     kafkaFutures = Optional.of(new LinkedList<Future<RecordMetadata>>());
                 }
@@ -584,6 +627,8 @@ public class KafkaChannel extends BasicChannelSemantics {
                             ex);
                 }
             } else {
+                // take 流程
+
                 // event taken ensures that we have collected events in this transaction
                 // before committing
                 if (consumerAndRecords.get().failedEvents.isEmpty() && eventTaken) {
@@ -645,6 +690,7 @@ public class KafkaChannel extends BasicChannelSemantics {
             return bytes;
         }
 
+        // 将 Kafka 的 ConsumerRecord 的 value (byte[] 字节数组) 反序列化成 Flume 的 event 的 body, 构建出 event
         private Event deserializeValue(byte[] value, boolean parseAsFlumeEvent) throws IOException {
             Event e;
             if (parseAsFlumeEvent) {
@@ -689,13 +735,22 @@ public class KafkaChannel extends BasicChannelSemantics {
     }
 
     /* Object to store our consumer */
+    /* 存储我们的 consumer 的对象 */
+    // 主要保存当前线程的 KafkaConsumer, 并将每次拉取的一批消息保存到 ConsumerRecords 和对应的迭代器中
     private class ConsumerAndRecords {
+
+        // KafkaConsumer
         final KafkaConsumer<String, byte[]> consumer;
+
         final String uuid;
         final LinkedList<Event> failedEvents = new LinkedList<Event>();
 
+        // consumer.poll() 拉取的一批 ConsumerRecords 消息
         ConsumerRecords<String, byte[]> records;
+        // consumer.poll() 拉取的一批 ConsumerRecords 消息转换成的迭代器
         Iterator<ConsumerRecord<String, byte[]>> recordIterator;
+
+        // 保存 topic 对应的 offset
         Map<TopicPartition, OffsetAndMetadata> offsets;
 
         ConsumerAndRecords(KafkaConsumer<String, byte[]> consumer, String uuid) {
@@ -705,9 +760,11 @@ public class KafkaChannel extends BasicChannelSemantics {
             this.recordIterator = records.iterator();
         }
 
+        // 通过 KafkaConsumer.poll() 从 Kafka 中拉取一批 ConsumerRecords 消息, 保存到 recordIterator 迭代器
         private void poll() {
             logger.trace("Polling with timeout: {}ms channel-{}", pollTimeout, getName());
             try {
+                // 通过 KafkaConsumer.poll() 从 Kafka 中拉取一批 ConsumerRecords 消息, 保存到 recordIterator 迭代器
                 records = consumer.poll(Duration.ofMillis(pollTimeout));
                 recordIterator = records.iterator();
                 logger.debug("{} returned {} records from last poll", getName(), records.count());
