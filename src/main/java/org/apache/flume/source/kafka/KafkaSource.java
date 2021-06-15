@@ -375,7 +375,7 @@ public class KafkaSource extends AbstractPollableSource
                     long commitStartTime = System.nanoTime();
 
                     // 因为 tpAndOffsetMetadata 记录了已经处理的 ConsumerRecords 中每个消息对应的不同分区消费到了哪个 offset
-                    // 所以在此处提交 KafkaConsumer 的消息拉取位置, 方便下次 poll()
+                    // 所以在此处提交 offset, 方便下次 poll()
                     consumer.commitSync(tpAndOffsetMetadata);
                     long commitEndTime = System.nanoTime();
                     counter.addToKafkaCommitTimer((commitEndTime - commitStartTime) / (1000 * 1000));
@@ -597,6 +597,8 @@ public class KafkaSource extends AbstractPollableSource
             if (subscriber instanceof TopicListSubscriber &&
                     ((TopicListSubscriber) subscriber).get().size() == 1) {
                 String topicStr = ((TopicListSubscriber) subscriber).get().get(0);
+
+                // 获取 Kafka 保存的 topic 的消费 offset, 如果存在则返回, 如果不存在则从 ZooKeeper 中获取, 并更新到 Kafka 中
                 migrateOffsets(topicStr);
             } else {
                 log.info("Will not attempt to migrate offsets " +
@@ -628,11 +630,14 @@ public class KafkaSource extends AbstractPollableSource
         log.info("Kafka Source {} stopped. Metrics: {}", getName(), counter);
     }
 
+    // 获取 Kafka 保存的 topic 的消费 offset, 如果存在则返回, 如果不存在则从 ZooKeeper 中获取, 并更新到 Kafka 中
     private void migrateOffsets(String topicStr) {
         try (KafkaZkClient zkClient = KafkaZkClient.apply(zookeeperConnect,
                 JaasUtils.isZkSecurityEnabled(), ZK_SESSION_TIMEOUT, ZK_CONNECTION_TIMEOUT, 10,
                 Time.SYSTEM, "kafka.server", "SessionExpireListener");
              KafkaConsumer<String, byte[]> consumer = new KafkaConsumer<>(kafkaProps)) {
+
+            // 获取 Kafka 保存的 topic 的消费 offset, 如果存在则返回
             Map<TopicPartition, OffsetAndMetadata> kafkaOffsets =
                     getKafkaOffsets(consumer, topicStr);
             if (!kafkaOffsets.isEmpty()) {
@@ -642,6 +647,7 @@ public class KafkaSource extends AbstractPollableSource
                 return;
             }
 
+            // 如果 Kafka 中不存在 topic 的消费 offset, 则从 ZooKeeper 中获取, 并更新到 Kafka 中
             log.info("No Kafka offsets found. Migrating zookeeper offsets");
             Map<TopicPartition, OffsetAndMetadata> zookeeperOffsets =
                     getZookeeperOffsets(zkClient, consumer, topicStr);
