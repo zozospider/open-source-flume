@@ -91,9 +91,11 @@ public class KafkaChannel extends BasicChannelSemantics {
     private static final int ZK_SESSION_TIMEOUT = 30000;
     private static final int ZK_CONNECTION_TIMEOUT = 30000;
 
+    // KafkaConsumer 和 KafkaProducer 的 Properties 参数
     private final Properties consumerProps = new Properties();
     private final Properties producerProps = new Properties();
 
+    // KafkaProducer
     private KafkaProducer<String, byte[]> producer;
     private final String channelUUID = UUID.randomUUID().toString();
 
@@ -114,6 +116,7 @@ public class KafkaChannel extends BasicChannelSemantics {
 
 
     // Track all consumers to close them eventually.
+    // 跟踪所有 consumers 以最终关闭它们.
     private final List<ConsumerAndRecords> consumers =
             Collections.synchronizedList(new LinkedList<ConsumerAndRecords>());
 
@@ -137,9 +140,15 @@ public class KafkaChannel extends BasicChannelSemantics {
         logger.info("Starting Kafka Channel: {}", getName());
         // As a migration step check if there are any offsets from the group stored in kafka
         // If not read them from Zookeeper and commit them to Kafka
+        // 作为迁移步骤, 检查存储在 kafka 中的组是否有任何 offsets
+        // 如果没有从 Zookeeper 读取它们并将它们提交给 Kafka
         if (migrateZookeeperOffsets && zookeeperConnect != null && !zookeeperConnect.isEmpty()) {
+
+            // 获取 Kafka 保存的 topic 的消费 offset, 如果存在则返回, 如果不存在则从 ZooKeeper 中获取, 并提交到 Kafka 中
             migrateOffsets();
         }
+
+        // 创建 KafkaProducer
         producer = new KafkaProducer<String, byte[]>(producerProps);
         // We always have just one topic being read by one thread
         logger.info("Topic = {}", topic.get());
@@ -314,11 +323,14 @@ public class KafkaChannel extends BasicChannelSemantics {
         }
     }
 
+    // 获取 Kafka 保存的 topic 的消费 offset, 如果存在则返回, 如果不存在则从 ZooKeeper 中获取, 并提交到 Kafka 中
     private void migrateOffsets() {
         try (KafkaZkClient zkClient = KafkaZkClient.apply(zookeeperConnect,
                 JaasUtils.isZkSecurityEnabled(), ZK_SESSION_TIMEOUT, ZK_CONNECTION_TIMEOUT, 10,
                 Time.SYSTEM, "kafka.server", "SessionExpireListener");
              KafkaConsumer<String, byte[]> consumer = new KafkaConsumer<>(consumerProps)) {
+
+            // 获取 Kafka 保存的 topic 的消费 offset, 如果存在则返回
             Map<TopicPartition, OffsetAndMetadata> kafkaOffsets = getKafkaOffsets(consumer);
             if (!kafkaOffsets.isEmpty()) {
                 logger.info("Found Kafka offsets for topic {}. Will not migrate from zookeeper", topicStr);
@@ -326,6 +338,7 @@ public class KafkaChannel extends BasicChannelSemantics {
                 return;
             }
 
+            // 如果 Kafka 中不存在 topic 的消费 offset, 则从 ZooKeeper 中获取, 并提交到 Kafka 中
             logger.info("No Kafka offsets found. Migrating zookeeper offsets");
             Map<TopicPartition, OffsetAndMetadata> zookeeperOffsets =
                     getZookeeperOffsets(zkClient, consumer);
@@ -336,6 +349,7 @@ public class KafkaChannel extends BasicChannelSemantics {
 
             logger.info("Committing Zookeeper offsets to Kafka");
             logger.debug("Offsets to commit: {}", zookeeperOffsets);
+            // 将 Zookeeper 保存的 offset 提交到 Kafka 中
             consumer.commitSync(zookeeperOffsets);
             // Read the offsets to verify they were committed
             Map<TopicPartition, OffsetAndMetadata> newKafkaOffsets = getKafkaOffsets(consumer);
@@ -398,6 +412,7 @@ public class KafkaChannel extends BasicChannelSemantics {
         NONE
     }
 
+    // Kafka Channel 的事务
     private class KafkaTransaction extends BasicTransactionSemantics {
 
         private TransactionType type = TransactionType.NONE;

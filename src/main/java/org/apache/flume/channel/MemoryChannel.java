@@ -72,16 +72,20 @@ public class MemoryChannel extends BasicChannelSemantics implements TransactionC
   // KeepAlive 默认值
   private static final Integer defaultKeepAlive = 3;
 
+  // Memory Channel 的事务
   private class MemoryTransaction extends BasicTransactionSemantics {
+
     // 当 Channel 调用 1 次或多次 take 方法时, 每次从 Channel 的 queue 中取出 1 个 event 加入到 takeList 作为缓存 (此时数据已从 Channel 取出), 并返回该 event 给调用者.
     // 当 Channel 调用 1 次 commit 方法时 (表示 sink take 1 个或多个 events 逻辑无异常), 会将 takeList 清空 (下次 Transaction 重新缓存).
     // 当 Channel 调用 1 次 rollback 方法时 (表示 sink take 1 个或多个 events 逻辑有异常), 将 takeList 中的 1 个或多个 events 放回到 Channel 的 queue (此时数据已放回到 Channel), 然后清空 takeList (下次 Transaction 重新缓存).
     private LinkedBlockingDeque<Event> takeList;
+
     // 当 Channel 调用 1 次或多次 put 方法时, 每次将 1 个 event 加入到 putList 作为缓存 (此时数据未加入 Channel).
     // 当 Channel 调用 1 次 commit 方法时 (表示 Channel put 1 个或多个 events 逻辑无异常), 会将 putList 中的 1 个或多个 events 加入到 Channel 的 queue (此时数据已加入 Channel), 然后清空 putList (下次 Transaction 重新缓存).
     // 当 Channel 调用 1 次 rollback 方法时 (表示 Channel put 1 个或多个 events 逻辑有异常), 会将 putList 清空 (下次 Transaction 重新缓存).
     private LinkedBlockingDeque<Event> putList;
     private final ChannelCounter channelCounter;
+
     // 距离上次 Transaction 提交或回滚到现在, 累计放入 Channel 的 events 的字节数
     private int putByteCounter = 0;
     // 距离上次 Transaction 提交或回滚到现在, 累计从 Channel 中拿走的 events 的字节数

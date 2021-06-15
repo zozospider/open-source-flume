@@ -593,6 +593,8 @@ public class KafkaSource extends AbstractPollableSource
 
         // As a migration step check if there are any offsets from the group stored in kafka
         // If not read them from Zookeeper and commit them to Kafka
+        // 作为迁移步骤, 检查存储在 kafka 中的组是否有任何 offsets
+        // 如果没有从 Zookeeper 读取它们并将它们提交给 Kafka
         if (migrateZookeeperOffsets && zookeeperConnect != null && !zookeeperConnect.isEmpty()) {
             // For simplicity we only support migration of a single topic via the TopicListSubscriber.
             // There was no way to define a list of topics or a pattern in the previous Flume version.
@@ -632,7 +634,7 @@ public class KafkaSource extends AbstractPollableSource
         log.info("Kafka Source {} stopped. Metrics: {}", getName(), counter);
     }
 
-    // 获取 Kafka 保存的 topic 的消费 offset, 如果存在则返回, 如果不存在则从 ZooKeeper 中获取, 并更新到 Kafka 中
+    // 获取 Kafka 保存的 topic 的消费 offset, 如果存在则返回, 如果不存在则从 ZooKeeper 中获取, 并提交到 Kafka 中
     private void migrateOffsets(String topicStr) {
         try (KafkaZkClient zkClient = KafkaZkClient.apply(zookeeperConnect,
                 JaasUtils.isZkSecurityEnabled(), ZK_SESSION_TIMEOUT, ZK_CONNECTION_TIMEOUT, 10,
@@ -649,7 +651,7 @@ public class KafkaSource extends AbstractPollableSource
                 return;
             }
 
-            // 如果 Kafka 中不存在 topic 的消费 offset, 则从 ZooKeeper 中获取, 并更新到 Kafka 中
+            // 如果 Kafka 中不存在 topic 的消费 offset, 则从 ZooKeeper 中获取, 并提交到 Kafka 中
             log.info("No Kafka offsets found. Migrating zookeeper offsets");
             Map<TopicPartition, OffsetAndMetadata> zookeeperOffsets =
                     getZookeeperOffsets(zkClient, consumer, topicStr);
@@ -660,6 +662,7 @@ public class KafkaSource extends AbstractPollableSource
 
             log.info("Committing Zookeeper offsets to Kafka");
             log.debug("Offsets to commit: {}", zookeeperOffsets);
+            // 将 Zookeeper 保存的 offset 提交到 Kafka 中
             consumer.commitSync(zookeeperOffsets);
             // Read the offsets to verify they were committed
             Map<TopicPartition, OffsetAndMetadata> newKafkaOffsets =
