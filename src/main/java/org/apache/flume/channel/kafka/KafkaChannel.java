@@ -80,6 +80,8 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import static org.apache.flume.channel.kafka.KafkaChannelConfiguration.*;
 
+// tips from: http://flume.apache.org/releases/content/1.9.0/FlumeUserGuide.html#kafka-channel
+// 目前支持 Kafka 服务器版本 0.10.1.0 或更高版本. 测试一直进行到 2.0.1, 这是发布时可用的最高版本.
 public class KafkaChannel extends BasicChannelSemantics {
 
     private static final Logger logger =

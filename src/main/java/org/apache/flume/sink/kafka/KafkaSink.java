@@ -124,6 +124,8 @@ import static org.apache.flume.sink.kafka.KafkaSinkConstants.MESSAGE_SERIALIZER_
  * topic
  * key
  */
+// tips from: https://flume.apache.org/releases/content/1.9.0/FlumeUserGuide.html#kafka-sink
+// 目前支持 Kafka 服务器版本 0.10.1.0 或更高版本. 测试一直进行到 2.0.1, 这是发布时可用的最高版本.
 public class KafkaSink extends AbstractSink implements Configurable, BatchSizeSupported {
 
     private static final Logger logger = LoggerFactory.getLogger(KafkaSink.class);
