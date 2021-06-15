@@ -103,6 +103,26 @@ import static org.apache.flume.sink.kafka.KafkaSinkConstants.MESSAGE_SERIALIZER_
  * header properties (per event):
  * topic
  * key
+ *
+ * 一个可以向 Kafka 发布消息的 Flume Sink.
+ * 这是可以与任何 Flume agent 和 channel 一起使用的通用实现.
+ * 消息可以是任何 event, key 是我们从头部读取的字符串用于 partition 的使用, 使用拦截器生成带有 partition key 的 header.
+ *
+ * 强制性属性是:
+ * brokerList -- 可以是部分列表, 但建议至少 2 个用于 HA.
+ *
+ * 但是, 任何以 "kafka" 开头的属性. 将传递给 Kafka producer.
+ * 阅读 Kafka producer 文档, 看看可以使用哪些配置.
+ *
+ * 可选属性:
+ * topic - 有一个默认值, 并且 - 如果您需要支持具有不同 topics 的 events, 这可以在 event header 中.
+ * batchSize - 一批要处理的消息数. 更大的批次在增加延迟的同时提高了吞吐量.
+ * requiredAcks -- 0 (不安全), 1 (至少一个 broker 接收, 默认), -1 (所有 brokers 接收).
+ * useFlumeEventFormat - 在序列化到 Kafka 时保留 event headers.
+ *
+ * header 属性 (每个 event):
+ * topic
+ * key
  */
 public class KafkaSink extends AbstractSink implements Configurable, BatchSizeSupported {
 
@@ -142,9 +162,11 @@ public class KafkaSink extends AbstractSink implements Configurable, BatchSizeSu
         return batchSize;
     }
 
+    // 处理
     @Override
     public Status process() throws EventDeliveryException {
         Status result = Status.READY;
+
         Channel channel = getChannel();
         Transaction transaction = null;
         Event event = null;
@@ -154,12 +176,17 @@ public class KafkaSink extends AbstractSink implements Configurable, BatchSizeSu
         try {
             long processedEvents = 0;
 
+            // 开启 Channel 事务
             transaction = channel.getTransaction();
             transaction.begin();
 
             kafkaFutures.clear();
             long batchStartTime = System.nanoTime();
+
+            // 批量处理 batchSize 个 event
             for (; processedEvents < batchSize; processedEvents += 1) {
+
+                // 从 Channel 中取出一个 event
                 event = channel.take();
 
                 if (event == null) {
@@ -175,8 +202,11 @@ public class KafkaSink extends AbstractSink implements Configurable, BatchSizeSu
                 counter.incrementEventDrainAttemptCount();
 
                 byte[] eventBody = event.getBody();
+                // 获取 event 的 headers
                 Map<String, String> headers = event.getHeaders();
 
+                // 获取 event 的 topic (配置为固定 topic 或从 event 的 headers 中取)
+                // 即对应为 Kafka 的 ProducerRecord 的 topic 参数
                 if (allowTopicOverride) {
                     eventTopic = headers.get(topicHeader);
                     if (eventTopic == null) {
@@ -190,6 +220,8 @@ public class KafkaSink extends AbstractSink implements Configurable, BatchSizeSu
                     eventTopic = topic;
                 }
 
+                // 获取 headers 中保存的 key 值
+                // 即对应为 Kafka 的 ProducerRecord 的 key 参数
                 eventKey = headers.get(KEY_HEADER);
                 if (logger.isTraceEnabled()) {
                     if (LogPrivacyUtil.allowLogRawData()) {
@@ -206,7 +238,11 @@ public class KafkaSink extends AbstractSink implements Configurable, BatchSizeSu
 
                 Integer partitionId = null;
                 try {
+                    // 构建 Kafka 的 ProducerRecord
                     ProducerRecord<String, byte[]> record;
+
+                    // 确认 partitionId
+                    // 即对应为 Kafka 的 ProducerRecord 的 partition 参数
                     if (staticPartitionId != null) {
                         partitionId = staticPartitionId;
                     }
@@ -217,6 +253,12 @@ public class KafkaSink extends AbstractSink implements Configurable, BatchSizeSu
                             partitionId = Integer.parseInt(headerVal);
                         }
                     }
+
+                    // 构建 Kafka 的 ProducerRecord, 参数如下:
+                    // topic: eventTopic
+                    // partition: partitionId
+                    // key: eventKey
+                    // value: 将 Flume 的 event 序列化成 byte[] 字节数组用于 Kafka 的 value
                     if (partitionId != null) {
                         record = new ProducerRecord<String, byte[]>(eventTopic, partitionId, eventKey,
                                 serializeEvent(event, useAvroEventFormat));
@@ -224,7 +266,12 @@ public class KafkaSink extends AbstractSink implements Configurable, BatchSizeSu
                         record = new ProducerRecord<String, byte[]>(eventTopic, eventKey,
                                 serializeEvent(event, useAvroEventFormat));
                     }
+
+                    // 通过 KafkaProducer.send() 发送当前 Record 到 Kafka 服务端
+                    // SinkCallback 为回调方法
+                    // KafkaProducer.send() 会返回一个 Future<RecordMetadata> 对象, 可在后续进行异步处理
                     kafkaFutures.add(producer.send(record, new SinkCallback(startTime)));
+
                 } catch (NumberFormatException ex) {
                     throw new EventDeliveryException("Non integer partition id specified", ex);
                 } catch (Exception ex) {
@@ -240,6 +287,7 @@ public class KafkaSink extends AbstractSink implements Configurable, BatchSizeSu
 
             // publish batch and commit.
             if (processedEvents > 0) {
+                // 批量处理多个 KafkaProducer.send() 返回的 Future<RecordMetadata>
                 for (Future<RecordMetadata> future : kafkaFutures) {
                     future.get();
                 }
@@ -248,9 +296,11 @@ public class KafkaSink extends AbstractSink implements Configurable, BatchSizeSu
                 counter.addToEventDrainSuccessCount(Long.valueOf(kafkaFutures.size()));
             }
 
+            // 提交 Channel 事务
             transaction.commit();
 
         } catch (Exception ex) {
+            // 回滚 Channel 事务
             String errorMsg = "Failed to publish events";
             logger.error("Failed to publish events", ex);
             counter.incrementEventWriteOrChannelFail(ex);
@@ -267,6 +317,7 @@ public class KafkaSink extends AbstractSink implements Configurable, BatchSizeSu
             }
             throw new EventDeliveryException(errorMsg, ex);
         } finally {
+            // 关闭 Channel 事务
             if (transaction != null) {
                 transaction.close();
             }
@@ -430,6 +481,7 @@ public class KafkaSink extends AbstractSink implements Configurable, BatchSizeSu
         return kafkaProps;
     }
 
+    // 将 Flume 的 event 序列化成 byte[] 字节数组用于 Kafka 的 value
     private byte[] serializeEvent(Event event, boolean useAvroEventFormat) throws IOException {
         byte[] bytes;
         if (useAvroEventFormat) {
@@ -462,6 +514,7 @@ public class KafkaSink extends AbstractSink implements Configurable, BatchSizeSu
 
 }
 
+// Kafka producer.send() 的回调接口
 class SinkCallback implements Callback {
     private static final Logger logger = LoggerFactory.getLogger(SinkCallback.class);
     private long startTime;
@@ -470,11 +523,16 @@ class SinkCallback implements Callback {
         this.startTime = startTime;
     }
 
+    // Kafka 的 record 成功发送到服务器时会调用此方法
+    // 当前实现主要是打印 Debug 级别的日志
     public void onCompletion(RecordMetadata metadata, Exception exception) {
+
+        // exception 不为空则表示发送异常
         if (exception != null) {
             logger.debug("Error sending message to Kafka {} ", exception.getMessage());
         }
 
+        // metadata 不为空则表示发送正常
         if (logger.isDebugEnabled()) {
             long eventElapsedTime = System.currentTimeMillis() - startTime;
             if (metadata != null) {
