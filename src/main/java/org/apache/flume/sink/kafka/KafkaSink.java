@@ -128,7 +128,9 @@ public class KafkaSink extends AbstractSink implements Configurable, BatchSizeSu
 
     private static final Logger logger = LoggerFactory.getLogger(KafkaSink.class);
 
+    // KafkaProducer 的 Properties 参数
     private final Properties kafkaProps = new Properties();
+    // KafkaProducer
     private KafkaProducer<String, byte[]> producer;
 
     private String topic;
@@ -329,6 +331,7 @@ public class KafkaSink extends AbstractSink implements Configurable, BatchSizeSu
     @Override
     public synchronized void start() {
         // instantiate the producer
+        // 实例化 KafkaProducer
         producer = new KafkaProducer<String,byte[]>(kafkaProps);
         counter.start();
         super.start();
@@ -400,6 +403,7 @@ public class KafkaSink extends AbstractSink implements Configurable, BatchSizeSu
             throw new ConfigurationException("Bootstrap Servers must be specified");
         }
 
+        // 设置 KafkaProducer 的 Properties 参数
         setProducerProps(context, bootStrapServers);
 
         if (logger.isDebugEnabled() && LogPrivacyUtil.allowLogPrintConfig()) {
@@ -465,6 +469,7 @@ public class KafkaSink extends AbstractSink implements Configurable, BatchSizeSu
         }
     }
 
+    // 设置 KafkaProducer 的 Properties 参数
     private void setProducerProps(Context context, String bootStrapServers) {
         kafkaProps.clear();
         kafkaProps.put(ProducerConfig.ACKS_CONFIG, DEFAULT_ACKS);
